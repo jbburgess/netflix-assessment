@@ -128,14 +128,39 @@ def count_source_items_by_type() -> dict:
     items = _list_items(service, SOURCE_FOLDER_ID)
 
     # Count the number of files and folders
-    total_items = len(items)
-
-    # Extract the mime types from the items and create a counter from them
-    mime_types = [item['mimeType'] for item in items]
-    counter = Counter(mime_types)
-
-    # Set folder count from mimeType; file count is all others (since some files may not have a mimeType)
-    folder_count = counter['application/vnd.google-apps.folder']
-    file_count = total_items - folder_count
+    total_count = len(items)
+    folder_count = Counter([item['mimeType'] for item in items])['application/vnd.google-apps.folder']
+    file_count = total_count - folder_count
     
     return {'file_count': file_count, 'folder_count': folder_count}
+
+def count_source_child_items_by_folder() -> dict:
+    '''
+    Recursively count the number of files and folders under each subfolder in the source Google Drive folder.
+
+    Returns:
+        A dictionary containing the number of files and folders in each folder in the source Google Drive folder.
+    '''
+
+    creds = _init_google_oauth()
+    service = build("drive", "v3", credentials = creds)
+
+    # List the top-level items in the source folder and filter to folders
+    items = _list_items(service, SOURCE_FOLDER_ID)
+    folders = [item for item in items if item['mimeType'] == 'application/vnd.google-apps.folder']
+
+    # Count the number of files and folders in each folder
+    folder_counts = {}
+    for folder in folders:
+        folder_items = _list_items(service, folder['id'], recursive = True)
+
+        # Count the number of files and folders
+        total_count = len(folder_items)
+        folder_count = Counter([folder_item['mimeType'] for folder_item in folder_items])['application/vnd.google-apps.folder']
+        file_count = total_count - folder_count
+
+        folder_counts[folder['name']] = {'nested_file_count': file_count, 'nested_folder_count': folder_count}
+        
+    folder_counts['total_nested_folder_count'] = sum(folder['nested_folder_count'] for folder in folder_counts.values())
+
+    return folder_counts
