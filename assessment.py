@@ -13,7 +13,7 @@ from googleapiclient.errors import HttpError
 # TODO - Move these to a configuration file.
 
 # Authentication
-SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
+DEFAULTSCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
 CREDENTIALS_FILEPATH = 'credentials.json'   # The path to the credentials file.
 TOKEN_FILEPATH = 'token.json'   # The path to the token file.
 
@@ -24,9 +24,12 @@ DESTINATION_FOLDER_ID = '10Fk5Src0lCQDEUfNPgwG4cXYRG3uPL1_'
 MAX_RECURSION_DEPTH = 20
 
 # Internal function to initialize the Google OAuth connection.
-def _init_google_oauth() -> Credentials:
+def _init_google_oauth(scopes: list = DEFAULTSCOPES) -> Credentials:
     '''
     Initialize the Google OAuth connection.
+
+    Args:
+        scopes: The list of scopes to request access to.
     
     Returns:
         The Google OAuth credentials and token.
@@ -37,13 +40,14 @@ def _init_google_oauth() -> Credentials:
     if os.path.exists(TOKEN_FILEPATH):
         creds = Credentials.from_authorized_user_file(TOKEN_FILEPATH)
 
-    # If there are no (valid) credentials available, let the user log in.
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+    # If there are no (valid) credentials available or existing scopes don't contain desired scope(s).
+    if not creds or not creds.valid or not all(scope in creds.scopes for scope in scopes):
+        # If only issue is that the credentials are expired, refresh them.
+        if creds and creds.expired and creds.refresh_token and all(scope in creds.scopes for scope in scopes):
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(
-                CREDENTIALS_FILEPATH, SCOPES
+                CREDENTIALS_FILEPATH, scopes
             )
             creds = flow.run_local_server(port=0)
         
@@ -104,7 +108,7 @@ def _list_items(service: build, folder_id: str, depth: int = 0, recursive: Optio
 
         except HttpError as error:
             # Handle rate limit exceeded errors
-            if error.resp.status == 403 and 'rateLimitExceeded' in error.content:
+            if error.resp.status == 403 and 'rateLimitExceeded' in error.content.decode('utf-8'):
                 print("Rate limit exceeded. Retrying after a delay...")
                 time.sleep(1)
             else:
@@ -112,6 +116,63 @@ def _list_items(service: build, folder_id: str, depth: int = 0, recursive: Optio
                 break
 
     return items
+
+# Internal function to copy items from the source Google Drive folder to the destination Google Drive folder.
+def _copy_items(service: build, source_folder_id: str, destination_folder_id: str, depth: int = 0, recursive: Optional[bool] = None):
+    
+    if depth > MAX_RECURSION_DEPTH:
+        print(f"Max recursion depth reached for folder: {source_folder_id}")
+        return []
+
+    items = _list_items(service, source_folder_id)
+    copied_folder_count = 0
+    copied_file_count = 0
+
+    for item in items:
+        # For folders, create a new folder in the destination with the same name
+        if item['mimeType'] == 'application/vnd.google-apps.folder':
+            # Create a new folder in the destination
+            folder_metadata = {
+                'name': item['name'],
+                'mimeType': 'application/vnd.google-apps.folder',
+                'parents': [destination_folder_id]
+            }
+            try:
+                new_folder = service.files().create(body = folder_metadata, fields = 'id').execute()
+                new_folder_id = new_folder.get('id')
+                copied_folder_count += 1
+
+                # Recursively copy items in the folder if requested
+                if recursive and depth <= MAX_RECURSION_DEPTH:
+                    nested_copy = _copy_items(service, item['id'], new_folder_id, depth + 1, recursive)
+                    copied_folder_count += nested_copy['copied_folder_count']
+                    copied_file_count += nested_copy['copied_file_count']
+            except HttpError as error:
+                # Handle rate limit exceeded errors
+                if error.resp.status == 403 and 'rateLimitExceeded' in error.content.decode('utf-8'):
+                    print("Rate limit exceeded. Retrying after a delay...")
+                    time.sleep(1)
+                else:
+                    print(f"An error occurred creating folder '{item['name']}': {error}")
+        # For files, copy the file to the destination folder
+        else:
+            # Copy the file to the destination folder
+            file_metadata = {
+                'name': item['name'],
+                'parents': [destination_folder_id]
+            }
+            try:
+                service.files().copy(fileId = item['id'], body = file_metadata).execute()
+                copied_file_count += 1
+            except HttpError as error:
+                # Handle rate limit exceeded errors
+                if error.resp.status == 403 and 'rateLimitExceeded' in error.content.decode('utf-8'):
+                    print("Rate limit exceeded. Retrying after a delay...")
+                    time.sleep(1)
+                else:
+                    print(f"An error occurred copying file '{item['name']}': {error}")
+
+    return {'copied_file_count': copied_file_count, 'copied_folder_count': copied_folder_count}
 
 def count_source_items_by_type() -> dict:
     '''
@@ -164,3 +225,19 @@ def count_source_child_items_by_folder() -> dict:
     folder_counts['total_nested_folder_count'] = sum(folder['nested_folder_count'] for folder in folder_counts.values())
 
     return folder_counts
+
+def copy_source_items_to_dest_folder() -> int:
+    '''
+    Copy all files from the source Google Drive folder to the destination Google Drive folder, including nested files and folders.
+
+    Returns:
+        The number of files copied to the destination folder.
+    '''
+
+    creds = _init_google_oauth(scopes = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/drive.metadata.readonly'])
+    service = build("drive", "v3", credentials = creds)
+
+    # Start copying from the source folder to the destination folder
+    copied_file_count = _copy_items(service, SOURCE_FOLDER_ID, DESTINATION_FOLDER_ID, recursive = True)
+
+    return copied_file_count
