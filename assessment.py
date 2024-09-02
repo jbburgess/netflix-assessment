@@ -1,4 +1,5 @@
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os.path
 import time
 from typing import Optional
@@ -8,6 +9,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from googleapiclient.http import BatchHttpRequest
 
 # Set global variables
 # TODO - Move these to a configuration file.
@@ -22,6 +24,8 @@ SOURCE_FOLDER_ID = '1cpo-7jgKSMdde-QrEJGkGxN1QvYdzP9V'
 DESTINATION_FOLDER_ID = '10Fk5Src0lCQDEUfNPgwG4cXYRG3uPL1_'
 
 MAX_RECURSION_DEPTH = 20
+BATCH_SIZE = 100  # Adjust based on API limits and performance
+MAX_WORKERS = 5  # Adjust based on system
 
 # Internal function to initialize the Google OAuth connection.
 def _init_google_oauth(scopes: list = DEFAULTSCOPES) -> Credentials:
@@ -97,7 +101,7 @@ def _list_items(service: build, folder_id: str, depth: int = 0, recursive: Optio
             files = response.get('files', [])
             items.extend(files)
 
-            if recursive and depth <= MAX_RECURSION_DEPTH:
+            if recursive and depth < MAX_RECURSION_DEPTH:
                 for file in files:
                     if file['mimeType'] == 'application/vnd.google-apps.folder':
                         items.extend(_list_items(service, file['id'], depth + 1, recursive))
@@ -119,58 +123,104 @@ def _list_items(service: build, folder_id: str, depth: int = 0, recursive: Optio
 
 # Internal function to copy items from the source Google Drive folder to the destination Google Drive folder.
 def _copy_items(service: build, source_folder_id: str, destination_folder_id: str, depth: int = 0, recursive: Optional[bool] = None):
+    '''
+    Internal function to copy items from the source Google Drive folder to the destination Google Drive folder.
+
+    Args:
+        service: The Google Drive API service.
+        source_folder_id: The ID of the source Google Drive folder.
+        destination_folder_id: The ID of the destination Google Drive folder.
+        depth: The current depth when copying items recursively.
+        recursive: A flag to indicate whether to copy items recursively.
+
+    Returns:
+        A dictionary containing the number of files and folders copied.
+
+    Raises:
+        HttpError: An error occurred accessing the Google Drive API.
+    '''
     
     if depth > MAX_RECURSION_DEPTH:
         print(f"Max recursion depth reached for folder: {source_folder_id}")
-        return []
+        return {'copied_folder_count': 0, 'copied_file_count': 0}
 
     items = _list_items(service, source_folder_id)
     copied_folder_count = 0
     copied_file_count = 0
+    folder_id_map = {}
 
-    for item in items:
-        # For folders, create a new folder in the destination with the same name
-        if item['mimeType'] == 'application/vnd.google-apps.folder':
-            # Create a new folder in the destination
-            folder_metadata = {
-                'name': item['name'],
-                'mimeType': 'application/vnd.google-apps.folder',
-                'parents': [destination_folder_id]
-            }
-            try:
-                new_folder = service.files().create(body = folder_metadata, fields = 'id').execute()
-                new_folder_id = new_folder.get('id')
+    # Callback function to handle each batch response
+    def handle_batch_response(request_id, response, exception):
+        nonlocal copied_file_count, copied_folder_count
+        if exception:
+            print(f"An error occurred: {exception}")
+        else:
+            if 'mimeType' in response and response['mimeType'] == 'application/vnd.google-apps.folder':
                 copied_folder_count += 1
+                folder_id_map[request_id] = response['id']
+                print(f"Folder copied: {response['name']} with new ID: {response['id']}")
+            else:
+                copied_file_count += 1
+                print(f"File copied: {response['name']} with new ID: {response['id']}")
 
-                # Recursively copy items in the folder if requested
-                if recursive and depth <= MAX_RECURSION_DEPTH:
-                    nested_copy = _copy_items(service, item['id'], new_folder_id, depth + 1, recursive)
+    # Function to create a batch request for item copy operations
+    def create_batch_request(items):
+        batch = service.new_batch_http_request(callback = handle_batch_response)
+        for item in items:
+            if item['mimeType'] == 'application/vnd.google-apps.folder':
+                folder_metadata = {
+                    'name': item['name'],
+                    'mimeType': 'application/vnd.google-apps.folder',
+                    'parents': [destination_folder_id]
+                }
+                batch.add(service.files().create(body = folder_metadata, fields = 'id, name, mimeType'), request_id = item['id'])
+            else:
+                file_metadata = {
+                    'name': item['name'],
+                    'parents': [destination_folder_id]
+                }
+                batch.add(service.files().copy(fileId = item['id'], body = file_metadata, fields='id, name, mimeType'), request_id = item['id'])
+        return batch
+
+    # If number of items exceeds configured batch size, split items into chunks for processing
+    if len(items) > BATCH_SIZE:
+        item_chunks = [items[i:i + BATCH_SIZE] for i in range(0, len(items), BATCH_SIZE)]
+    else:
+        item_chunks = [items]
+
+    # Process each chunk in parallel using ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers = MAX_WORKERS) as executor:
+        futures = [executor.submit(create_batch_request(chunk).execute) for chunk in item_chunks]
+
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except HttpError as error:
+                if error.resp.status == 403 and 'rateLimitExceeded' in error.content.decode('utf-8'):
+                    print("Rate limit exceeded. Retrying after a delay...")
+                    time.sleep(1)
+                else:
+                    print(f"An error occurred: {error}")
+
+    # Ensure all futures have completed
+    for future in futures:
+        future.result()
+
+    # Debug output to verify folder_id_map contents
+    print(f"folder_id_map: {folder_id_map}")
+
+    # Recursively copy items in the folder if requested
+    if recursive and depth < MAX_RECURSION_DEPTH:
+        print(f"Recursion enabled, checking for nested folders")
+        for item in items:
+            if item['mimeType'] == 'application/vnd.google-apps.folder':
+                print(f"Item {item['name']} is a folder, copying nested items")
+                new_folder_id = folder_id_map.get(item['id'])
+                if new_folder_id:
+                    print(f"New folder ID retrieved, copying nested items to folder: {new_folder_id}")
+                    nested_copy = _copy_items(service, item['id'], new_folder_id, depth + 1, recursive = True)
                     copied_folder_count += nested_copy['copied_folder_count']
                     copied_file_count += nested_copy['copied_file_count']
-            except HttpError as error:
-                # Handle rate limit exceeded errors
-                if error.resp.status == 403 and 'rateLimitExceeded' in error.content.decode('utf-8'):
-                    print("Rate limit exceeded. Retrying after a delay...")
-                    time.sleep(1)
-                else:
-                    print(f"An error occurred creating folder '{item['name']}': {error}")
-        # For files, copy the file to the destination folder
-        else:
-            # Copy the file to the destination folder
-            file_metadata = {
-                'name': item['name'],
-                'parents': [destination_folder_id]
-            }
-            try:
-                service.files().copy(fileId = item['id'], body = file_metadata).execute()
-                copied_file_count += 1
-            except HttpError as error:
-                # Handle rate limit exceeded errors
-                if error.resp.status == 403 and 'rateLimitExceeded' in error.content.decode('utf-8'):
-                    print("Rate limit exceeded. Retrying after a delay...")
-                    time.sleep(1)
-                else:
-                    print(f"An error occurred copying file '{item['name']}': {error}")
 
     return {'copied_file_count': copied_file_count, 'copied_folder_count': copied_folder_count}
 
@@ -231,13 +281,13 @@ def copy_source_items_to_dest_folder() -> int:
     Copy all files from the source Google Drive folder to the destination Google Drive folder, including nested files and folders.
 
     Returns:
-        The number of files copied to the destination folder.
+        The number of files and folders copied to the destination folder.
     '''
 
     creds = _init_google_oauth(scopes = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/drive.metadata.readonly'])
     service = build("drive", "v3", credentials = creds)
 
     # Start copying from the source folder to the destination folder
-    copied_file_count = _copy_items(service, SOURCE_FOLDER_ID, DESTINATION_FOLDER_ID, recursive = True)
+    copied_item_counts = _copy_items(service, SOURCE_FOLDER_ID, DESTINATION_FOLDER_ID, recursive = True)
 
-    return copied_file_count
+    return copied_item_counts
