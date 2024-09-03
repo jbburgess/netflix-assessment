@@ -1,6 +1,8 @@
-from collections import Counter
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os.path
+import random
+from ssl import SSLError
 import time
 from typing import Optional
 
@@ -8,7 +10,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
+from googleapiclient.errors import HttpError, TimeoutError
 from googleapiclient.http import BatchHttpRequest
 
 # Set global variables
@@ -62,7 +64,7 @@ def _init_google_oauth(scopes: list = DEFAULTSCOPES) -> Credentials:
     return creds
 
 # Internal function to list items in the specified Google Drive folder.
-def _list_items(service: build, folder_id: str, depth: int = 0, recursive: Optional[bool] = None) -> list:
+def _list_items(service: build, folder_id: str, depth: int = 0, recursive: Optional[bool] = None, retries = 5) -> list:
     '''
     Internal function to list items in the specified Google Drive folder.
 
@@ -87,39 +89,60 @@ def _list_items(service: build, folder_id: str, depth: int = 0, recursive: Optio
     page_token = None
     query = f"'{folder_id}' in parents"
 
-    while True:
+    # Retry loop to handle transient errors
+    for attempt in range(retries):
         try:
-            response = (
-                service.files().list(
-                    q = query,
-                    spaces = "drive",
-                    corpora = "user",
-                    fields = "nextPageToken, files(name, id, mimeType)",
-                    pageToken = page_token,
-                ).execute()
-            )
-            files = response.get('files', [])
-            items.extend(files)
+            # While loop to handle pagination of returned items
+            while True:
+                response = (
+                    service.files().list(
+                        q = query,
+                        spaces = "drive",
+                        corpora = "user",
+                        fields = "nextPageToken, files(name, id, mimeType)",
+                        pageToken = page_token,
+                    ).execute()
+                )
+                
+                # Ensure the response is a dictionary (sometimes a string is returned?)
+                if not isinstance(response, dict):
+                    raise ValueError(f"Unexpected response type: {type(response)}")
+                
+                files = response.get('files', [])
+                items.extend(files)
 
-            if recursive and depth < MAX_RECURSION_DEPTH:
-                for file in files:
-                    if file['mimeType'] == 'application/vnd.google-apps.folder':
-                        items.extend(_list_items(service, file['id'], depth + 1, recursive))
+                # If recursive flag is set and max depth is not reached, call recursively on folders
+                if recursive and depth < MAX_RECURSION_DEPTH:
+                    for file in files:
+                        if file['mimeType'] == 'application/vnd.google-apps.folder':
+                            items.extend(_list_items(service, file['id'], depth + 1, recursive))
 
-            page_token = response.get("nextPageToken", None)
-            if page_token is None:
-                break
+                # Check if there are more pages to retrieve
+                page_token = response.get("nextPageToken", None)
+                if page_token is None:
+                    break
+            
+            return items
 
-        except HttpError as error:
-            # Handle rate limit exceeded errors
-            if error.resp.status == 403 and 'rateLimitExceeded' in error.content.decode('utf-8'):
-                print("Rate limit exceeded. Retrying after a delay...")
-                time.sleep(1)
+        except (HttpError, SSLError, TimeoutError, ValueError) as error:
+            if isinstance(error, HttpError) and error.resp.status in [403, 500, 503]:
+                if 'rateLimitExceeded' in error.content.decode('utf-8'):
+                    print("Rate limit exceeded. Retrying after a delay...")
+                else:
+                    print(f"An HTTP error occurred: {error}. Retrying...")
+            elif isinstance(error, SSLError):
+                print(f"An SSL error occurred: {error}. Retrying...")
+            elif isinstance(error, TimeoutError):
+                print(f"A timeout occurred: {error}. Retrying...")
+            elif isinstance(error, ValueError):
+                print(f"An unexpected response type error occurred: {error}. Retrying...")
             else:
                 print(f"An error occurred: {error}")
                 break
 
-    return items
+            time.sleep((2 ** attempt) + random.random())
+
+    raise TimeoutError(f"Failed to list items in folder {folder_id} after {retries} attempts")
 
 # Internal function to copy items from the source Google Drive folder to the destination Google Drive folder.
 def _copy_items(service: build, source_folder_id: str, destination_folder_id: str, depth: int = 0, recursive: Optional[bool] = None):
@@ -196,7 +219,7 @@ def _copy_items(service: build, source_folder_id: str, destination_folder_id: st
             try:
                 future.result()
             except HttpError as error:
-                if error.resp.status == 403 and 'rateLimitExceeded' in error.content.decode('utf-8'):
+                if 'rateLimitExceeded' in error.content.decode('utf-8'):
                     print("Rate limit exceeded. Retrying after a delay...")
                     time.sleep(1)
                 else:
@@ -205,9 +228,6 @@ def _copy_items(service: build, source_folder_id: str, destination_folder_id: st
     # Ensure all futures have completed
     for future in futures:
         future.result()
-
-    # Debug output to verify folder_id_map contents
-    print(f"folder_id_map: {folder_id_map}")
 
     # Recursively copy items in the folder if requested
     if recursive and depth < MAX_RECURSION_DEPTH:
@@ -288,6 +308,6 @@ def copy_source_items_to_dest_folder() -> int:
     service = build("drive", "v3", credentials = creds)
 
     # Start copying from the source folder to the destination folder
-    copied_item_counts = _copy_items(service, SOURCE_FOLDER_ID, DESTINATION_FOLDER_ID, recursive = True)
+    copied_item_counts = _copy_items(service, SOURCE_FOLDER_ID, DESTINATION_FOLDER_ID)
 
     return copied_item_counts
