@@ -10,7 +10,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError, TimeoutError
+from googleapiclient.errors import HttpError
 from googleapiclient.http import BatchHttpRequest
 
 # Set global variables
@@ -87,7 +87,7 @@ def _list_items(service: build, folder_id: str, depth: int = 0, recursive: Optio
 
     items = []
     page_token = None
-    query = f"'{folder_id}' in parents"
+    query = f"'{folder_id}' in parents and trashed=false"
 
     # Retry loop to handle transient errors
     for attempt in range(retries):
@@ -244,6 +244,97 @@ def _copy_items(service: build, source_folder_id: str, destination_folder_id: st
 
     return {'copied_file_count': copied_file_count, 'copied_folder_count': copied_folder_count}
 
+def _copy_items_bfs(service, source_folder_id, destination_folder_id):
+    copied_folder_count = 0
+    copied_file_count = 0
+
+    # Initialize a double-ended queue with the top-level source and destination folder IDs
+    queue = deque([tuple((source_folder_id, destination_folder_id))])
+
+    # Process top-level and all nested folders one level at a time
+    while queue:
+        # Store the length (breadth) of the current level before we start processing
+        level_breadth = len(queue)
+        print(f"----Starting new level with breadth {level_breadth} ----")
+
+        # Reset folder_id_map for each level
+        folder_id_map = {}
+
+        # Callback function to handle each batch request response
+        def handle_batch_response(request_id, response, exception):
+            nonlocal copied_file_count, copied_folder_count
+            if exception:
+                print(f"An error occurred: {exception}")
+            else:
+                # Check if the response is a folder or file and update counts
+                if 'mimeType' in response and response['mimeType'] == 'application/vnd.google-apps.folder':
+                    copied_folder_count += 1
+                    print(f"Folder copied: {response['name']} with new ID: {response['id']}")
+                    
+                    # Store mapping of source folder ID to new folder ID (to add to queue later)
+                    folder_id_map[request_id] = response['id']
+                else:
+                    copied_file_count += 1
+                    print(f"File copied: {response['name']} with new ID: {response['id']}")
+
+        # Function to create a batch request for all items in a given folder
+        def create_batch_request(items, parent_id):
+            batch = service.new_batch_http_request(callback = handle_batch_response)
+            for item in items:
+                # For each item, add either a folder creation request or a copy request to the batch
+                if item['mimeType'] == 'application/vnd.google-apps.folder':
+                    folder_metadata = {
+                        'name': item['name'],
+                        'mimeType': 'application/vnd.google-apps.folder',
+                        'parents': [parent_id]
+                    }
+                    batch.add(service.files().create(body = folder_metadata, fields = 'id, name, mimeType'), request_id = item['id'])
+                else:
+                    file_metadata = {
+                        'name': item['name'],
+                        'parents': [parent_id]
+                    }
+                    batch.add(service.files().copy(fileId = item['id'], body = file_metadata, fields = 'id, name, mimeType'), request_id = item['id'])
+            return batch
+
+        # Process folders at the current level in parallel
+        with ThreadPoolExecutor(max_workers = MAX_WORKERS) as executor:
+            futures = []
+            
+            # For each folder, retrieve its items and create a batch request to copy them
+            for _ in range(level_breadth):
+                src_id, dest_id = queue.popleft()
+                print (f"Processing source folder {src_id} and destination folder {dest_id}")
+                items = _list_items(service, src_id)
+                if items:
+                    print(f"Found {len(items)} items in folder {src_id}, creating batch requests.")
+                    for i in range(0, len(items), BATCH_SIZE):
+                        chunk = items[i:i + BATCH_SIZE]
+                        batch = create_batch_request(chunk, dest_id)
+                        futures.append(executor.submit(batch.execute))
+
+            # Wait for all batch requests to complete and handle exceptions
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as error:
+                    print(f"An unexpected error occurred: {error}")
+
+        # Ensure all futures have completed
+        for future in futures:
+            try:
+                future.result()
+            except Exception as error:
+                print(f"An error occurred while ensuring futures completion: {error}")
+
+        # Debug output to verify folder_id_map contents
+        print(f"folder_id_map: {folder_id_map}")
+
+        # Add nested folders that were just created to the queue for processing of the next level down
+        queue.extend((src_id, new_dest_id) for src_id, new_dest_id in folder_id_map.items())
+
+    return {'copied_file_count': copied_file_count, 'copied_folder_count': copied_folder_count}
+
 def count_source_items_by_type() -> dict:
     '''
     Count the number of files and folders in the source Google Drive folder.
@@ -296,9 +387,12 @@ def count_source_child_items_by_folder() -> dict:
 
     return folder_counts
 
-def copy_source_items_to_dest_folder() -> int:
+def copy_source_items_to_dest_folder(bfs: Optional[bool] = None) -> int:
     '''
     Copy all files from the source Google Drive folder to the destination Google Drive folder, including nested files and folders.
+
+    Args:
+        bfs: A flag to indicate whether to copy items using a breadth-first search (BFS) approach. (EXPERIMENTAL)
 
     Returns:
         The number of files and folders copied to the destination folder.
@@ -308,6 +402,9 @@ def copy_source_items_to_dest_folder() -> int:
     service = build("drive", "v3", credentials = creds)
 
     # Start copying from the source folder to the destination folder
-    copied_item_counts = _copy_items(service, SOURCE_FOLDER_ID, DESTINATION_FOLDER_ID)
+    if bfs:
+        copied_item_counts = _copy_items_bfs(service, SOURCE_FOLDER_ID, DESTINATION_FOLDER_ID)
+    else:
+        copied_item_counts = _copy_items(service, SOURCE_FOLDER_ID, DESTINATION_FOLDER_ID, recursive = True)
 
     return copied_item_counts
