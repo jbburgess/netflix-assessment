@@ -1,7 +1,9 @@
 from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
 import logging
 import os.path
+from pathlib import Path
 import random
 from ssl import SSLError
 import time
@@ -14,41 +16,47 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import BatchHttpRequest
 
-# Set global variables
-# TODO - Move these to a configuration file.
+# Retrieve JSON config file.
+root_dir = Path(Path(__file__).parent)
+with open("config.json", encoding = "utf8") as json_data_file:
+    config = json.load(json_data_file)
 
+# Parse config and initialize global variables
 # Authentication
-DEFAULTSCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
-CREDENTIALS_FILEPATH = 'credentials.json'   # The path to the credentials file.
-TOKEN_FILEPATH = 'token.json'   # The path to the token file.
+CREDENTIALS_FILEPATH = config["authentication"]["credentials_filepath"]
+TOKEN_FILEPATH = config["authentication"]["token_filepath"]
+DEFAULTSCOPES = config["authentication"]["default_scopes"]
 
 # Google Drive folder IDs
-SOURCE_FOLDER_ID = '1cpo-7jgKSMdde-QrEJGkGxN1QvYdzP9V'
-DESTINATION_FOLDER_ID = '10Fk5Src0lCQDEUfNPgwG4cXYRG3uPL1_'
+SOURCE_FOLDER_ID = config["drive"]["source_folder_id"]
+DESTINATION_FOLDER_ID = config["drive"]["destination_folder_id"]
 
-MAX_RECURSION_DEPTH = 20
-BATCH_SIZE = 100  # Adjust based on API limits and performance
-MAX_WORKERS = 5  # Adjust based on system
+# Performance
+MAX_RECURSION_DEPTH = config["performance"]["max_recursion_depth"]
+MAX_RETRIES = config["performance"]["max_retries"]
+BATCH_SIZE = config["performance"]["batch_size"]
+MAX_WORKERS = config["performance"]["max_workers"]
 
-LOGLEVEL_CONSOLE = logging.INFO
-LOG_FILE_ENABLED = False
-LOG_FILE_PATH = 'assessment.log'
-LOGLEVEL_FILE = logging.DEBUG
+# Logging
+LOG_FILE_ENABLED = config["logging"]["log_file_enabled"]
+LOG_FILE_PATH = config["logging"]["log_file_path"]
+LOG_LEVEL_CONSOLE = getattr(logging, (config["logging"]["log_level_console"]).upper(), logging.INFO)
+LOG_LEVEL_FILE = getattr(logging, (config["logging"]["log_level_file"]).upper(), logging.DEBUG)
+LOG_FORMAT = config["logging"]["log_format"]
 
-# Create console logger and handler
+# Create logger and console handler
 logger = logging.getLogger('assessment')
 logger.setLevel(logging.DEBUG)
 console_handler = logging.StreamHandler()
-console_handler.setLevel(LOGLEVEL_CONSOLE)
-# Set formatting for log messages
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+console_handler.setLevel(LOG_LEVEL_CONSOLE)
+formatter = logging.Formatter(LOG_FORMAT)
 console_handler.setFormatter(formatter)
-# Add the handler to the logger
 logger.addHandler(console_handler)
 
+# If enabled, create file handler
 if LOG_FILE_ENABLED:
     file_handler = logging.FileHandler(LOG_FILE_PATH)
-    file_handler.setLevel(LOGLEVEL_FILE)
+    file_handler.setLevel(LOG_LEVEL_FILE)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
@@ -99,7 +107,7 @@ def _init_google_oauth(scopes: list = DEFAULTSCOPES) -> Credentials:
     return creds
 
 # Internal function to list items in the specified Google Drive folder.
-def _list_items(service: build, folder_id: str, depth: int = 0, recursive: Optional[bool] = None, retries = 5) -> list:
+def _list_items(service: build, folder_id: str, depth: int = 0, recursive: Optional[bool] = None) -> list:
     '''
     Internal function to list items in the specified Google Drive folder.
 
@@ -125,7 +133,7 @@ def _list_items(service: build, folder_id: str, depth: int = 0, recursive: Optio
     query = f"'{folder_id}' in parents and trashed=false"
 
     # Retry loop to handle transient errors
-    for attempt in range(retries):
+    for attempt in range(MAX_RETRIES):
         try:
             # While loop to handle pagination of returned items
             while True:
@@ -177,7 +185,7 @@ def _list_items(service: build, folder_id: str, depth: int = 0, recursive: Optio
 
             time.sleep((2 ** attempt) + random.random())
 
-    raise TimeoutError(f"Failed to list items in folder {folder_id} after {retries} attempts")
+    raise TimeoutError(f"Failed to list items in folder {folder_id} after {MAX_RETRIES} attempts")
 
 # Internal function to copy items from the source Google Drive folder to the destination Google Drive folder.
 def _copy_items(service: build, source_folder_id: str, destination_folder_id: str, depth: int = 0, recursive: Optional[bool] = None):

@@ -1,0 +1,25 @@
+{
+    "authentication":{
+        "credentials_filepath": "credentials.json",
+        "token_filepath": "token.json",
+        "default_scopes": ["https://www.googleapis.com/auth/drive.metadata.readonly"]
+    },
+    "drive":{
+        "source_folder_id": "1cpo-7jgKSMdde-QrEJGkGxN1QvYdzP9V",
+        "destination_folder_id": "10Fk5Src0lCQDEUfNPgwG4cXYRG3uPL1_"
+    },
+    "logging":{
+        "log_file_enabled": "False",
+        "log_file_path": "log.txt",
+        "log_level_console": "INFO",
+        "log_level_file": "DEBUG",
+        "log_format": "%(asctime)s - %(levelname)s - %(message)s"
+    },
+    "performance":{
+        "max_recursion_depth": 20,
+        "max_retries": 5,
+        "batch_size": 100,
+        "max_workers": 5
+    }
+
+}
