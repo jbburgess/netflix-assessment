@@ -1,5 +1,6 @@
 from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
 import os.path
 import random
 from ssl import SSLError
@@ -29,6 +30,28 @@ MAX_RECURSION_DEPTH = 20
 BATCH_SIZE = 100  # Adjust based on API limits and performance
 MAX_WORKERS = 5  # Adjust based on system
 
+LOGLEVEL_CONSOLE = logging.INFO
+LOG_FILE_ENABLED = False
+LOG_FILE_PATH = 'assessment.log'
+LOGLEVEL_FILE = logging.DEBUG
+
+# Create console logger and handler
+logger = logging.getLogger('assessment')
+logger.setLevel(logging.DEBUG)
+console_handler = logging.StreamHandler()
+console_handler.setLevel(LOGLEVEL_CONSOLE)
+# Set formatting for log messages
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(formatter)
+# Add the handler to the logger
+logger.addHandler(console_handler)
+
+if LOG_FILE_ENABLED:
+    file_handler = logging.FileHandler(LOG_FILE_PATH)
+    file_handler.setLevel(LOGLEVEL_FILE)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
 # Internal function to initialize the Google OAuth connection.
 def _init_google_oauth(scopes: list = DEFAULTSCOPES) -> Credentials:
     '''
@@ -44,7 +67,11 @@ def _init_google_oauth(scopes: list = DEFAULTSCOPES) -> Credentials:
     # Load the credentials from the file.
     creds = None
     if os.path.exists(TOKEN_FILEPATH):
-        creds = Credentials.from_authorized_user_file(TOKEN_FILEPATH)
+        try:
+            creds = Credentials.from_authorized_user_file(TOKEN_FILEPATH)
+        except Exception as e:
+            logger.error(f"An error occurred while loading existing token: {e}")
+            raise
 
     # If there are no (valid) credentials available or existing scopes don't contain desired scope(s).
     if not creds or not creds.valid or not all(scope in creds.scopes for scope in scopes):
@@ -52,14 +79,22 @@ def _init_google_oauth(scopes: list = DEFAULTSCOPES) -> Credentials:
         if creds and creds.expired and creds.refresh_token and all(scope in creds.scopes for scope in scopes):
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CREDENTIALS_FILEPATH, scopes
-            )
-            creds = flow.run_local_server(port=0)
+            try:
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    CREDENTIALS_FILEPATH, scopes
+                )
+                creds = flow.run_local_server(port=0)
+            except Exception as e:
+                logger.error(f"An error occurred during OAuth flow: {e}")
+                raise
         
         # Save the credentials for the next run
-        with open("token.json", "w") as token:
-            token.write(creds.to_json())
+        try:
+            with open("token.json", "w") as token:
+                token.write(creds.to_json())
+        except Exception as e:
+            logger.error(f"An error occurred while saving your token: {e}")
+            raise
     
     return creds
 
@@ -82,7 +117,7 @@ def _list_items(service: build, folder_id: str, depth: int = 0, recursive: Optio
     '''
 
     if depth > MAX_RECURSION_DEPTH:
-        print(f"Max recursion depth reached for folder: {folder_id}")
+        logger.warning(f"Max recursion depth reached for folder: {folder_id}")
         return []
 
     items = []
@@ -127,17 +162,17 @@ def _list_items(service: build, folder_id: str, depth: int = 0, recursive: Optio
         except (HttpError, SSLError, TimeoutError, ValueError) as error:
             if isinstance(error, HttpError) and error.resp.status in [403, 500, 503]:
                 if 'rateLimitExceeded' in error.content.decode('utf-8'):
-                    print("Rate limit exceeded. Retrying after a delay...")
+                    logger.error("Rate limit exceeded. Retrying after a delay...")
                 else:
-                    print(f"An HTTP error occurred: {error}. Retrying...")
+                    logger.error(f"An HTTP error occurred: {error}. Retrying...")
             elif isinstance(error, SSLError):
-                print(f"An SSL error occurred: {error}. Retrying...")
+                logger.error(f"An SSL error occurred: {error}. Retrying...")
             elif isinstance(error, TimeoutError):
-                print(f"A timeout occurred: {error}. Retrying...")
+                logger.error(f"A timeout occurred: {error}. Retrying...")
             elif isinstance(error, ValueError):
-                print(f"An unexpected response type error occurred: {error}. Retrying...")
+                logger.error(f"An unexpected response type error occurred: {error}. Retrying...")
             else:
-                print(f"An error occurred: {error}")
+                logger.error(f"An error occurred: {error}")
                 break
 
             time.sleep((2 ** attempt) + random.random())
@@ -164,7 +199,7 @@ def _copy_items(service: build, source_folder_id: str, destination_folder_id: st
     '''
     
     if depth > MAX_RECURSION_DEPTH:
-        print(f"Max recursion depth reached for folder: {source_folder_id}")
+        logger.warning(f"Max recursion depth reached for folder: {source_folder_id}")
         return {'copied_folder_count': 0, 'copied_file_count': 0}
 
     items = _list_items(service, source_folder_id)
@@ -176,15 +211,15 @@ def _copy_items(service: build, source_folder_id: str, destination_folder_id: st
     def handle_batch_response(request_id, response, exception):
         nonlocal copied_file_count, copied_folder_count
         if exception:
-            print(f"An error occurred: {exception}")
+            logger.error(f"An error occurred: {exception}")
         else:
             if 'mimeType' in response and response['mimeType'] == 'application/vnd.google-apps.folder':
                 copied_folder_count += 1
                 folder_id_map[request_id] = response['id']
-                print(f"Folder copied: {response['name']} with new ID: {response['id']}")
+                logger.info(f"Folder copied: {response['name']} with new ID: {response['id']}")
             else:
                 copied_file_count += 1
-                print(f"File copied: {response['name']} with new ID: {response['id']}")
+                logger.info(f"File copied: {response['name']} with new ID: {response['id']}")
 
     # Function to create a batch request for item copy operations
     def create_batch_request(items):
@@ -220,10 +255,10 @@ def _copy_items(service: build, source_folder_id: str, destination_folder_id: st
                 future.result()
             except HttpError as error:
                 if 'rateLimitExceeded' in error.content.decode('utf-8'):
-                    print("Rate limit exceeded. Retrying after a delay...")
+                    logger.warning("Rate limit exceeded. Retrying after a delay...")
                     time.sleep(1)
                 else:
-                    print(f"An error occurred: {error}")
+                    logger.error(f"An error occurred: {error}")
 
     # Ensure all futures have completed
     for future in futures:
@@ -231,13 +266,13 @@ def _copy_items(service: build, source_folder_id: str, destination_folder_id: st
 
     # Recursively copy items in the folder if requested
     if recursive and depth < MAX_RECURSION_DEPTH:
-        print(f"Recursion enabled, checking for nested folders")
+        logger.debug(f"Recursion enabled, checking for nested folders")
         for item in items:
             if item['mimeType'] == 'application/vnd.google-apps.folder':
-                print(f"Item {item['name']} is a folder, copying nested items")
+                logger.debug(f"Item {item['name']} is a folder, copying nested items")
                 new_folder_id = folder_id_map.get(item['id'])
                 if new_folder_id:
-                    print(f"New folder ID retrieved, copying nested items to folder: {new_folder_id}")
+                    logger.debug(f"New folder ID retrieved, copying nested items to folder: {new_folder_id}")
                     nested_copy = _copy_items(service, item['id'], new_folder_id, depth + 1, recursive = True)
                     copied_folder_count += nested_copy['copied_folder_count']
                     copied_file_count += nested_copy['copied_file_count']
@@ -255,7 +290,7 @@ def _copy_items_bfs(service, source_folder_id, destination_folder_id):
     while queue:
         # Store the length (breadth) of the current level before we start processing
         level_breadth = len(queue)
-        print(f"----Starting new level with breadth {level_breadth} ----")
+        logger.debug(f"----Starting new level with breadth {level_breadth} ----")
 
         # Reset folder_id_map for each level
         folder_id_map = {}
@@ -264,18 +299,18 @@ def _copy_items_bfs(service, source_folder_id, destination_folder_id):
         def handle_batch_response(request_id, response, exception):
             nonlocal copied_file_count, copied_folder_count
             if exception:
-                print(f"An error occurred: {exception}")
+                logger.error(f"An error occurred: {exception}")
             else:
                 # Check if the response is a folder or file and update counts
                 if 'mimeType' in response and response['mimeType'] == 'application/vnd.google-apps.folder':
                     copied_folder_count += 1
-                    print(f"Folder copied: {response['name']} with new ID: {response['id']}")
+                    logger.info(f"Folder copied: {response['name']} with new ID: {response['id']}")
                     
                     # Store mapping of source folder ID to new folder ID (to add to queue later)
                     folder_id_map[request_id] = response['id']
                 else:
                     copied_file_count += 1
-                    print(f"File copied: {response['name']} with new ID: {response['id']}")
+                    logger.info(f"File copied: {response['name']} with new ID: {response['id']}")
 
         # Function to create a batch request for all items in a given folder
         def create_batch_request(items, parent_id):
@@ -298,7 +333,7 @@ def _copy_items_bfs(service, source_folder_id, destination_folder_id):
             return batch
 
         # Process folders at the current level in parallel
-        with ThreadPoolExecutor(max_workers = MAX_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers = min(MAX_WORKERS, level_breadth)) as executor:
             futures = []
             
             # For each folder, retrieve its items and create a batch request to copy them
@@ -307,7 +342,7 @@ def _copy_items_bfs(service, source_folder_id, destination_folder_id):
                 print (f"Processing source folder {src_id} and destination folder {dest_id}")
                 items = _list_items(service, src_id)
                 if items:
-                    print(f"Found {len(items)} items in folder {src_id}, creating batch requests.")
+                    logger.debug(f"Found {len(items)} items in folder {src_id}, creating batch requests.")
                     for i in range(0, len(items), BATCH_SIZE):
                         chunk = items[i:i + BATCH_SIZE]
                         batch = create_batch_request(chunk, dest_id)
@@ -318,17 +353,17 @@ def _copy_items_bfs(service, source_folder_id, destination_folder_id):
                 try:
                     future.result()
                 except Exception as error:
-                    print(f"An unexpected error occurred: {error}")
+                    logger.error(f"An unexpected error occurred: {error}")
 
         # Ensure all futures have completed
         for future in futures:
             try:
                 future.result()
             except Exception as error:
-                print(f"An error occurred while ensuring futures completion: {error}")
+                logger.error(f"An error occurred while ensuring futures completion: {error}")
 
         # Debug output to verify folder_id_map contents
-        print(f"folder_id_map: {folder_id_map}")
+        logger.debug(f"folder_id_map: {folder_id_map}")
 
         # Add nested folders that were just created to the queue for processing of the next level down
         queue.extend((src_id, new_dest_id) for src_id, new_dest_id in folder_id_map.items())
@@ -337,11 +372,14 @@ def _copy_items_bfs(service, source_folder_id, destination_folder_id):
 
 def count_source_items_by_type() -> dict:
     '''
-    Count the number of files and folders in the source Google Drive folder.
+    Count the number of files and folders at the root of the source Google Drive folder.
 
     Returns:
         A dictionary containing the number of files and folders in the source Google Drive folder.
     '''
+    logger.info("Assessment #1 - Counting files and folders at the root of the source folder...")
+    logger.debug(f"Source folder ID: {SOURCE_FOLDER_ID}")
+    logger.debug(f"Destination folder ID: {DESTINATION_FOLDER_ID}")
 
     creds = _init_google_oauth()
     service = build("drive", "v3", credentials = creds)
@@ -354,6 +392,7 @@ def count_source_items_by_type() -> dict:
     folder_count = Counter([item['mimeType'] for item in items])['application/vnd.google-apps.folder']
     file_count = total_count - folder_count
     
+    logger.info(f"Total items: {total_count}, Files: {file_count}, Folders: {folder_count}")
     return {'file_count': file_count, 'folder_count': folder_count}
 
 def count_source_child_items_by_folder() -> dict:
@@ -363,6 +402,9 @@ def count_source_child_items_by_folder() -> dict:
     Returns:
         A dictionary containing the number of files and folders in each folder in the source Google Drive folder.
     '''
+    logger.info("Assessment #2 - Counting child objects in each subfolder under the source folder...")
+    logger.debug(f"Source folder ID: {SOURCE_FOLDER_ID}")
+    logger.debug(f"Destination folder ID: {DESTINATION_FOLDER_ID}")
 
     creds = _init_google_oauth()
     service = build("drive", "v3", credentials = creds)
@@ -374,6 +416,7 @@ def count_source_child_items_by_folder() -> dict:
     # Count the number of files and folders in each folder
     folder_counts = {}
     for folder in folders:
+        logger.debug(f"Processing folder: {folder['name']}...")
         folder_items = _list_items(service, folder['id'], recursive = True)
 
         # Count the number of files and folders
@@ -381,9 +424,13 @@ def count_source_child_items_by_folder() -> dict:
         folder_count = Counter([folder_item['mimeType'] for folder_item in folder_items])['application/vnd.google-apps.folder']
         file_count = total_count - folder_count
 
+        # Store the counts for the current folder
+        logger.info(f"Folder: {folder['name']} - Child Files: {file_count}, Child Folders: {folder_count}")
         folder_counts[folder['name']] = {'nested_file_count': file_count, 'nested_folder_count': folder_count}
         
-    folder_counts['total_nested_folder_count'] = sum(folder['nested_folder_count'] for folder in folder_counts.values())
+    # Store the total count of all folders under the source folder (top-level folders + all nested folders)
+    folder_counts['total_nested_folder_count'] = sum([len(folders)] + [folder['nested_folder_count'] for folder in folder_counts.values()])
+    logger.info(f"Total nested folder count (including top-level): {folder_counts['total_nested_folder_count']}")
 
     return folder_counts
 
@@ -397,14 +444,19 @@ def copy_source_items_to_dest_folder(bfs: Optional[bool] = None) -> int:
     Returns:
         The number of files and folders copied to the destination folder.
     '''
+    logger.info("Assessment #3 - Copying the content of the source folder to the destination folder...")
+    logger.debug(f"Source folder ID: {SOURCE_FOLDER_ID}")
+    logger.debug(f"Destination folder ID: {DESTINATION_FOLDER_ID}")
 
     creds = _init_google_oauth(scopes = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/drive.metadata.readonly'])
     service = build("drive", "v3", credentials = creds)
 
     # Start copying from the source folder to the destination folder
     if bfs:
+        logger.info("BFS flag set, using experimental breadth-first search method.")
         copied_item_counts = _copy_items_bfs(service, SOURCE_FOLDER_ID, DESTINATION_FOLDER_ID)
     else:
+        logger.info("Using default recursive copy method (DFS).")
         copied_item_counts = _copy_items(service, SOURCE_FOLDER_ID, DESTINATION_FOLDER_ID, recursive = True)
 
     return copied_item_counts
