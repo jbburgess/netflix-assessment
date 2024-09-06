@@ -34,10 +34,10 @@ To execute individually:
 
 ```python
 >>> import assessment
->>> assessment.count_source_items_by_type()
+>>> assessment_1_results = assessment.count_source_items_by_type()
 ```
 
-The function will report human-readable results directly to the console and also return a `dict` structured as follows:
+The function will report formatted results directly to the console and also return a `dict` structured as follows:
 
 ```python
 {
@@ -55,10 +55,10 @@ To execute individually:
 
 ```python
 >>> import assessment
->>> assessment.count_source_child_items_by_folder()
+>>> assessment_2_results = assessment.count_source_child_items_by_folder()
 ```
 
-The function will report human-readable results directly to the console and also return a `dict` structured as follows:
+The function will report formatted results directly to the console and also return a `dict` structured as follows:
 
 ```python
 {
@@ -91,10 +91,10 @@ To execute individually:
 
 ```python
 >>> import assessment
->>> assessment.copy_source_items_to_dest_folder()
+>>> assessment_3_results = assessment.copy_source_items_to_dest_folder()
 ```
 
-The function will report human-readable results directly to the console as it performs copy actions and also return a `dict` upon completion that's structured as follows:
+The function will report formatted results directly to the console as it performs copy actions and also return a `dict` upon completion that's structured as follows:
 
 ```python
 {
@@ -108,8 +108,9 @@ The function will report human-readable results directly to the console as it pe
 
 #### Reporting
 
-* All three functions will output human-readable reports to the console as they execute. The results are also returned as `dict` objects that can be used for further script logic.
-* If enabled in the `config.json` file, all the results outputted to the console will also be logged to a file specified in the `log_file_path` setting. Log Levels for console and file output can be adjusted individually in the `config.json` file as well.
+* All three functions will output table-formatted reports to the console after they execute. The results are also returned as `dict` objects that can be used for further script logic.
+* If enabled in the `config.json` file, all the results outputted to the console will also be logged to the file specified in the `log_file_path` setting. Log Levels for console and file output can be adjusted individually in the `config.json` file.
+  * Use the `INFO` log level to receive just the formatted reports in the console and `DEBUG` to see more detailed log messages as the functions execute. Since assessment #3 is long-running, it outputs progress messages at the `INFO` level.
 * Each function also has an `export_csv` parameter. If a file name or relative path is provided in this parameter, the result `dict` will be exported to a CSV file with the specified name:
 ```python
 >>> import assessment
