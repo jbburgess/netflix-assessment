@@ -9,7 +9,8 @@ An importable Python module, `assessment`, with functions designed to fulfull th
 1. Clone the repository.
 2. Install the dependencies listed in `requirements.txt` (preferably via a new virtual environment).
 3. Download and place the client secret JSON file for your GCP OAuth2 credential in the root directory of the project.
-4. If needed, modify the `config.json` file to point to the proper path and filename for your credentials file. You can modify other settings if desired, but the functions should run successfully with the default settings (See [`Optional Configurations`](#optional-configurations) below for full details).
+4. Either rename the credential file to `credentials.json` or modify the `config.json` file to point to the proper path and filename for your credentials file.
+5. Optionally, modify other settings in `config.json` if desired; the functions should run successfully with the default settings (See [`Optional Configurations`](#optional-configurations) below for full details).
 
 ## Usage
 
@@ -104,12 +105,13 @@ The function will report formatted results directly to the console as it perform
     'copied_folder_count': 0,
 }
 ```
+> [!NOTE]
 > **Note:** As folders can't be copied in Google Drive and a new one must instead be created before copying any contained files into it, executing this function will not overwrite any existing files or folders in the destination folder with the same name. There will instead be a duplicate folder structure created from the top-level down. The function will also not delete any files or folders in the destination folder that are not present in the source folder.
 
 #### Reporting
 
 * All three functions will output table-formatted reports to the console after they execute. The results are also returned as `dict` objects that can be used for further script logic.
-* If enabled in the `config.json` file, all the results outputted to the console will also be logged to the file specified in the `log_file_path` setting. Log Levels for console and file output can be adjusted individually in the `config.json` file.
+* If enabled in the `config.json` file, all the results outputted to the console will also be logged to the file specified in the `log_file_path` setting. Log Levels for console and file output can be adjusted individually in the `config.json` file (see the [Logging Settings](#logging-settings) section).
   * Use the `INFO` log level to receive just the formatted reports in the console and `DEBUG` to see more detailed log messages as the functions execute. Since assessment #3 is long-running, it outputs progress messages at the `INFO` level.
 * Each function also has an `export_csv` parameter. If a file name or relative path is provided in this parameter, the result `dict` will be exported to a CSV file with the specified name:
 ```python
@@ -123,11 +125,10 @@ The module uses OAuth2 for authentication to the Google API. The user must have 
 
 Upon running the module for the first time, the user will be prompted to authenticate with Google Drive using the OAuth2 credentials and allow the app to access their account. The resulting authentication token will be stored in a file specified in the `config.json` file, and, rather than prompting for authentication each time, subsequent runs of the module will use this token to authenticate (and refresh it if needed).
 
-Since the Google Drive API does not offer scopes that provide read/write access only to specific folders (unless you have a web-based frontend through which you can use the Picker API to choose and allow specific folders via the `drive.file` scope), the module may request access to *all* files and folders in the user's Google Drive account, depending on which assessment is being executed. The module is designed to only read and write to the source and destination folders specified in the `config.json` file, but the user should be aware that the module will have access to all files and folders in their Google Drive account and that they should review this code to their satisfaction before executing it.
+> [!IMPORTANT]
+> Since the Google Drive API does not offer scopes that provide read/write access only to specific folders (unless you have a web-based frontend through which you can use the Picker API to choose and allow specific folders via the `drive.file` scope), the module may request access to *all* files and folders in the user's Google Drive account, depending on which assessment is being executed. The module is designed to only read and write to the source and destination folders specified in the `config.json` file, but the user should be aware that the module will have access to all files and folders in their Google Drive account and that they should review this code to their satisfaction before executing it, and delete the stored token when done with it (saved to the location specified under `token_filepath` in `config.json`).
 
-Make sure to delete the saved token when you are done using this module. The token is saved in a file specified in the `config.json` file.
-
-> **Note:** To mitigate this somewhat, the module will only request full access (`drive`) if the user is executing assessment #3 and copying items between folders. The other two assessments do not require file read or write access and will instead request a read-only scope to file metadata (`drive.metadata.readonly`). If you have an existing token with just the metadata read-only scope, then you will be prompted to re-authenticate and provide the full read/write permissions if you attempt to execute assessment #3, and that token will replace the saved token you had previously.
+To mitigate this somewhat, the module will only request full access (`drive`) if the user is executing assessment #3 and copying items between folders. The other two assessments do not require file read or write access and will instead request a read-only scope to file metadata (`drive.metadata.readonly`). If you have an existing token with just the metadata read-only scope, then you will be prompted to re-authenticate and provide the full read/write permissions if you attempt to execute assessment #3, and that token will replace the saved token you had previously.
 
 ### Optional Configurations
 
@@ -159,7 +160,8 @@ The included `config.json` file contains the following non-sensitive values that
   * Default value: `"DEBUG"`
 * `log_format`: Format string for log messages.
   * Default value: `"%(asctime)s - %(levelname)s - %(message)s"`
-  > **Note:** Console reporting of assessment results is done at the `INFO` level, so narrowing console or file level settings will result in assessment reports not streaming to the respective outputs.
+> [!NOTE]
+> Reporting of assessment results is done at the `INFO` level, so narrowing console or file log level settings beyond that will result in assessment reports not streaming to the respective outputs.
 
 #### Performance Settings
 * `max_recursion_depth`: Maximum depth for recursive file operations.
@@ -192,11 +194,10 @@ The following improvements could be made to the module, depending on requirement
 1. Add a testing suite for the functions using `pytest` or `unittest`
     1. Add unit testing with proper mocking of the Google Drive API.
     2. Add integration testing that tests the functions against a test Google Drive account with known folder structures and files.
-2. Add different options for interacting with and executing the assessments, depending on the targeted audience and use case. This could be anything from a command-line based menu that allows individual function calls while running the module as a script to a web-based frontend that uses the Picker API to allow the user to select the source and destination folders, allowing for more granular control over the permissions being granted to the app, and then execute the assessments and get reports via a GUI.
-3. Add additional options for exporting the results of the assessments, such as writing the results to a CSV file, a Google Sheet, or a PDF report.
-4. Improve performance of breadth-first search for file copy operations. Currently, the module defaults to a depth-first search, which can be slow for large folder structures. There's an optional implemention of BFS in the `copy_source_items_to_dest_folder()` function, but it's not used by default, as it results in frequent API timeout and SSL errors that are seemingly unrelated to rate limits (this functionality can be used by setting the `bfs` parameter to `True` in the function call).
-5. Add additional functionality to the `copy_source_items_to_dest_folder()` function that allows for various copy options, like optional overwriting of existing files with the same name in the destination folder, with additional logic that checks for existing folders and files in the destination folder, compares Last Modified timestamps, allows for either updating existing files with new content revisions, leaving existing file/folder as-is, etc.
-6. Add more thorough parameter validation and error handling to the functions.
+2. Add different options for interacting with and executing the assessments, depending on the targeted audience and use case. This could be range from something as simple as a command-line based menu that allows selecting individual function calls while running the module as a script, to something more involved, like a web-based frontend that uses the Picker API to allow the user to select the source and destination folders (allowing for more granular control over the permissions being granted to the app), and has a GUI for executing the individual assessments and getting reports.
+3. Improve performance of breadth-first search for file copy operations. Currently, the module defaults to a depth-first search, which can be slow for large folder structures. There's an optional implemention of BFS in the `copy_source_items_to_dest_folder()` function, but it's not used by default, as it results in frequent API timeout and SSL errors that are seemingly unrelated to rate limits (this functionality can be used by setting the `bfs` parameter to `True` in the function call).
+4. Add additional functionality to the `copy_source_items_to_dest_folder()` function that allows for various copy options, like optional overwriting of existing files with the same name in the destination folder, with additional logic that checks for existing folders and files in the destination folder, compares Last Modified timestamps, allows for either updating existing files with new content revisions, leaving existing file/folder as-is, etc.
+5. Add more thorough parameter validation and error handling to the functions.
 
 ## Authors
 
