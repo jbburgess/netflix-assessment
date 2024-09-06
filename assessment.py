@@ -15,6 +15,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import BatchHttpRequest
+import pandas as pd
 
 # Retrieve JSON config file.
 root_dir = Path(Path(__file__).parent)
@@ -292,7 +293,7 @@ def _copy_items(service: build, source_folder_id: str, destination_folder_id: st
                     copied_folder_count += nested_copy['copied_folder_count']
                     copied_file_count += nested_copy['copied_file_count']
 
-    return {'copied_file_count': copied_file_count, 'copied_folder_count': copied_folder_count}
+    return {'source_folder_id': source_folder_id, 'destination_folder_id': destination_folder_id, 'copied_file_count': copied_file_count, 'copied_folder_count': copied_folder_count}
 
 def _copy_items_bfs(service, source_folder_id, destination_folder_id):
     '''
@@ -398,11 +399,46 @@ def _copy_items_bfs(service, source_folder_id, destination_folder_id):
         # Add nested folders that were just created to the queue for processing of the next level down
         queue.extend((src_id, new_dest_id) for src_id, new_dest_id in folder_id_map.items())
 
-    return {'copied_file_count': copied_file_count, 'copied_folder_count': copied_folder_count}
+    return {'source_folder_id': source_folder_id, 'destination_folder_id': destination_folder_id, 'copied_file_count': copied_file_count, 'copied_folder_count': copied_folder_count}
 
-def count_source_items_by_type() -> dict:
+def _output_results(results: dict, export_csv: Optional[str] = None, index_name: Optional[str] = None) -> None:
+    '''
+    Output the results of the assessments to the console and optionally export to a CSV file.
+
+    Args:
+        results: A dictionary containing the results of the assessments.
+        export_csv: The filename or relative path to export the results to as a CSV file.
+        index_name: The name of the index column in the output DataFrame.
+
+    Returns:
+        None
+    '''
+
+    # Convert dictionary to DataFrame
+    if index_name:
+        df = pd.DataFrame.from_dict(results, orient = 'index')
+        df.index.name = index_name
+        df.reset_index(inplace = True)
+    else:
+        df = pd.DataFrame.from_dict([results])
+    
+    # Output to log streams
+    logger.info("\n" + df.to_string(index = False))
+
+    # Export to CSV file if requested
+    if export_csv:
+        if not export_csv.endswith('.csv'):
+            export_csv += '.csv'
+        path = Path(export_csv)
+        df.to_csv(path, index = False)
+        logger.info(f"Results exported to CSV file: {export_csv}")
+
+def count_source_items_by_type(export_csv: Optional[str] = None) -> dict:
     '''
     Count the number of files and folders at the root of the source Google Drive folder.
+
+    Args:
+        export_csv: The filename or relative path to export the results to as a CSV file.
 
     Returns:
         A dictionary containing the number of files and folders at the root of the source Google Drive folder.
@@ -421,13 +457,21 @@ def count_source_items_by_type() -> dict:
     total_count = len(items)
     folder_count = Counter([item['mimeType'] for item in items])['application/vnd.google-apps.folder']
     file_count = total_count - folder_count
-    
-    logger.info(f"Total items: {total_count} - Files: {file_count}, Folders: {folder_count}")
-    return {'file_count': file_count, 'folder_count': folder_count}
 
-def count_source_child_items_by_folder() -> dict:
+    item_counts = {'source_folder_id': SOURCE_FOLDER_ID,'file_count': file_count, 'folder_count': folder_count}
+    logger.debug(f"Total items: {total_count} - Files: {file_count}, Folders: {folder_count}")
+
+    # Output the results
+    _output_results(item_counts, export_csv = export_csv)
+    
+    return item_counts
+
+def count_source_child_items_by_folder(export_csv: Optional[str] = None) -> dict:
     '''
     Recursively count the number of files and folders under each subfolder in the source Google Drive folder.
+
+    Args:
+        export_csv: The filename or relative path to export the results to as a CSV file.
 
     Returns:
         A dictionary containing the number of files and folders in each folder in the source Google Drive folder and the total count of nested folders under the source folder.
@@ -455,21 +499,27 @@ def count_source_child_items_by_folder() -> dict:
         file_count = total_count - folder_count
 
         # Store the counts for the current folder
-        logger.info(f"Folder: {folder['name']} - Child Files: {file_count}, Child Folders: {folder_count}")
-        folder_counts[folder['name']] = {'nested_file_count': file_count, 'nested_folder_count': folder_count}
+        logger.debug(f"Folder ID: {folder['id']} - Folder Name: {folder['name']} - Child Items: {total_count} (Files: {file_count}, Folders: {folder_count})")
+        folder_counts[folder['id']] = {'folder_name': folder['name'], 'child_items_count': total_count, 'child_file_count': file_count, 'child_folder_count': folder_count}
         
     # Store the total count of all folders under the source folder (top-level folders + all nested folders)
-    folder_counts['total_nested_folder_count'] = sum([len(folders)] + [folder['nested_folder_count'] for folder in folder_counts.values()])
-    logger.info(f"Total nested folder count (including top-level): {folder_counts['total_nested_folder_count']}")
+    total_nested_file_count = sum([len(items) - len(folders)] + [folder['child_file_count'] for folder in folder_counts.values()])
+    total_nested_folder_count = sum([len(folders)] + [folder['child_folder_count'] for folder in folder_counts.values()])
+    folder_counts['(totals)'] = {'folder_name': '', 'child_items_count': total_nested_file_count + total_nested_folder_count, 'child_file_count': total_nested_file_count, 'child_folder_count': total_nested_folder_count}
+    logger.debug(f"Total nested items count (including top-level) - {total_nested_file_count + total_nested_folder_count} (Files: {total_nested_file_count}, Folders: {total_nested_folder_count})")
 
+    # Output the results
+    _output_results(folder_counts, export_csv = export_csv, index_name = 'folder_id')
+    
     return folder_counts
 
-def copy_source_items_to_dest_folder(bfs: Optional[bool] = None) -> int:
+def copy_source_items_to_dest_folder(bfs: Optional[bool] = None, export_csv: Optional[str] = None) -> int:
     '''
     Copy all files from the source Google Drive folder to the destination Google Drive folder, including nested files and folders.
 
     Args:
         bfs: A flag to indicate whether to copy items using a breadth-first search (BFS) approach. (EXPERIMENTAL)
+        export_csv: The relative path to export the results to as a CSV file.
 
     Returns:
         A dictionary containing the number of files and folders copied to the destination folder.
@@ -488,6 +538,9 @@ def copy_source_items_to_dest_folder(bfs: Optional[bool] = None) -> int:
     else:
         logger.info("Using default recursive copy method (DFS).")
         copied_item_counts = _copy_items(service, SOURCE_FOLDER_ID, DESTINATION_FOLDER_ID, recursive = True)
+
+    # Output the results
+    _output_results(copied_item_counts, export_csv = export_csv)
 
     return copied_item_counts
 
