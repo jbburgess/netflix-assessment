@@ -106,7 +106,7 @@ The function will report formatted results directly to the console as it perform
 }
 ```
 > [!NOTE]
-> **Note:** As folders can't be copied in Google Drive and a new one must instead be created before copying any contained files into it, executing this function will not overwrite any existing files or folders in the destination folder with the same name. There will instead be a duplicate folder structure created from the top-level down. The function will also not delete any files or folders in the destination folder that are not present in the source folder.
+> As folders can't be copied in Google Drive and a new one must instead be created before copying any contained files into it, executing this function will not overwrite any existing files or folders in the destination folder with the same name. There will instead be a duplicate folder structure created from the top-level down. The function will also not delete any files or folders in the destination folder that are not present in the source folder.
 
 #### Reporting
 
@@ -144,12 +144,14 @@ The included `config.json` file contains the following non-sensitive values that
   * Default value: `["https://www.googleapis.com/auth/drive.metadata.readonly"]`
 
 #### Drive Settings
+
 * `source_folder_id`: The ID of the source folder in Google Drive.
   * Default value: `"1cpo-7jgKSMdde-QrEJGkGxN1QvYdzP9V"`
 * `destination_folder_id`: The ID of the destination folder in Google Drive.
   * Default value: `"10Fk5Src0lCQDEUfNPgwG4cXYRG3uPL1_"`
 
 #### Logging Settings
+
 * `log_file_enabled`: Boolean value indicating whether logging to a file is enabled. Enabling this will output log messages to the path specified in `log_file_path`.
   * Default value: `"False"`
 * `log_file_path`: Relative or full Path to the outputted log file.
@@ -164,6 +166,7 @@ The included `config.json` file contains the following non-sensitive values that
 > Reporting of assessment results is done at the `INFO` level, so narrowing console or file log level settings beyond that will result in assessment reports not streaming to the respective outputs.
 
 #### Performance Settings
+
 * `max_recursion_depth`: Maximum depth for recursive file operations.
   * Default value: `20`
 * `max_retries`: Maximum number of retries for failed `files().list()` operations.
