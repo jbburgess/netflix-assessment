@@ -63,13 +63,17 @@ if LOG_FILE_ENABLED:
 # Internal function to initialize the Google OAuth connection.
 def _init_google_oauth(scopes: list = DEFAULTSCOPES) -> Credentials:
     '''
-    Initialize the Google OAuth connection.
+    Internal function to initialize the Google OAuth connection using the provided credentials/token.
 
     Args:
         scopes: The list of scopes to request access to.
     
     Returns:
         The Google OAuth credentials and token.
+
+    Raises:
+        Exception: An error occurred during the OAuth flow.
+        Exception: An error occurred while saving the token.
     '''
 
     # Load the credentials from the file.
@@ -122,6 +126,9 @@ def _list_items(service: build, folder_id: str, depth: int = 0, recursive: Optio
 
     Raises:
         HttpError: An error occurred accessing the Google Drive API.
+        SSLError: An SSL error occurred.
+        TimeoutError: A timeout occurred while accessing the Google Drive API.
+        ValueError: An unexpected response type was received.
     '''
 
     if depth > MAX_RECURSION_DEPTH:
@@ -288,6 +295,21 @@ def _copy_items(service: build, source_folder_id: str, destination_folder_id: st
     return {'copied_file_count': copied_file_count, 'copied_folder_count': copied_folder_count}
 
 def _copy_items_bfs(service, source_folder_id, destination_folder_id):
+    '''
+    Internal function to copy items from the source Google Drive folder to the destination Google Drive folder, using a breadth-first search (BFS) approach.
+
+    Args:
+        service: The Google Drive API service.
+        source_folder_id: The ID of the source Google Drive folder.
+        destination_folder_id: The ID of the destination Google Drive folder.
+        
+    Returns:
+        A dictionary containing the number of files and folders copied.
+
+    Raises:
+        HttpError: An error occurred accessing the Google Drive API.
+    '''
+
     copied_folder_count = 0
     copied_file_count = 0
 
@@ -383,7 +405,7 @@ def count_source_items_by_type() -> dict:
     Count the number of files and folders at the root of the source Google Drive folder.
 
     Returns:
-        A dictionary containing the number of files and folders in the source Google Drive folder.
+        A dictionary containing the number of files and folders at the root of the source Google Drive folder.
     '''
     logger.info("Assessment #1 - Counting files and folders at the root of the source folder...")
     logger.debug(f"Source folder ID: {SOURCE_FOLDER_ID}")
@@ -400,7 +422,7 @@ def count_source_items_by_type() -> dict:
     folder_count = Counter([item['mimeType'] for item in items])['application/vnd.google-apps.folder']
     file_count = total_count - folder_count
     
-    logger.info(f"Total items: {total_count}, Files: {file_count}, Folders: {folder_count}")
+    logger.info(f"Total items: {total_count} - Files: {file_count}, Folders: {folder_count}")
     return {'file_count': file_count, 'folder_count': folder_count}
 
 def count_source_child_items_by_folder() -> dict:
@@ -408,7 +430,7 @@ def count_source_child_items_by_folder() -> dict:
     Recursively count the number of files and folders under each subfolder in the source Google Drive folder.
 
     Returns:
-        A dictionary containing the number of files and folders in each folder in the source Google Drive folder.
+        A dictionary containing the number of files and folders in each folder in the source Google Drive folder and the total count of nested folders under the source folder.
     '''
     logger.info("Assessment #2 - Counting child objects in each subfolder under the source folder...")
     logger.debug(f"Source folder ID: {SOURCE_FOLDER_ID}")
@@ -450,7 +472,7 @@ def copy_source_items_to_dest_folder(bfs: Optional[bool] = None) -> int:
         bfs: A flag to indicate whether to copy items using a breadth-first search (BFS) approach. (EXPERIMENTAL)
 
     Returns:
-        The number of files and folders copied to the destination folder.
+        A dictionary containing the number of files and folders copied to the destination folder.
     '''
     logger.info("Assessment #3 - Copying the content of the source folder to the destination folder...")
     logger.debug(f"Source folder ID: {SOURCE_FOLDER_ID}")
@@ -468,3 +490,9 @@ def copy_source_items_to_dest_folder(bfs: Optional[bool] = None) -> int:
         copied_item_counts = _copy_items(service, SOURCE_FOLDER_ID, DESTINATION_FOLDER_ID, recursive = True)
 
     return copied_item_counts
+
+if __name__ == "__main__":
+    logger.info("Executed as script, running all three assessments...")
+    count_source_items_by_type()
+    count_source_child_items_by_folder()
+    copy_source_items_to_dest_folder()
