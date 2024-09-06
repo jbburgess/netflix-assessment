@@ -41,6 +41,7 @@ The function will report human-readable results directly to the console and also
 
 ```python
 {
+    'source_folder_id': '[Source Folder ID]',
     'file_count': 0,
     'folder_count': 0
 }
@@ -61,16 +62,24 @@ The function will report human-readable results directly to the console and also
 
 ```python
 {
-    'Folder Name #1': {
-        'nested_file_count': 0,
-        'nested_folder_count': 0
+    '[Folder ID #1]': {
+        'folder_name': '[Folder Name #1]',
+        'child_items_count': 0,
+        'child_file_count': 0,
+        'child_folder_count': 0
     },
-    'Folder Name #2': {
-        'nested_file_count': 0,
-        'nested_folder_count': 0
+    '[Folder ID #2]': {
+        'folder_name': '[Folder Name #2]',
+        'child_items_count': 0,
+        'child_file_count': 0,
+        'child_folder_count': 0
     },
-    [...]
-    'total_nested_folder_count': 0
+    '(totals)': {
+        'folder_name': '',
+        'child_items_count': 0,
+        'child_file_count': 0,
+        'child_folder_count': 0
+    }
 }
 ```
 
@@ -89,11 +98,23 @@ The function will report human-readable results directly to the console as it pe
 
 ```python
 {
+    'source_folder_id': '[Source Folder ID]',
+    'destination_folder_id': '[Destination Folder ID]',
     'copied_file_count': 0,
     'copied_folder_count': 0,
 }
 ```
-> **Note:** As folders can't be copied in Google Drive and a new one must instead be created before copying any contained files into it, executing this function will not overwrite any existing files or folders in the destination folder with the same name. There will instead be a duplicate folder structure created from the top-level down.
+> **Note:** As folders can't be copied in Google Drive and a new one must instead be created before copying any contained files into it, executing this function will not overwrite any existing files or folders in the destination folder with the same name. There will instead be a duplicate folder structure created from the top-level down. The function will also not delete any files or folders in the destination folder that are not present in the source folder.
+
+#### Reporting
+
+* All three functions will output human-readable reports to the console as they execute. The results are also returned as `dict` objects that can be used for further script logic.
+* If enabled in the `config.json` file, all the results outputted to the console will also be logged to a file specified in the `log_file_path` setting. Log Levels for console and file output can be adjusted individually in the `config.json` file as well.
+* Each function also has an `export_csv` parameter. If a file name or relative path is provided in this parameter, the result `dict` will be exported to a CSV file with the specified name:
+```python
+>>> import assessment
+>>> assessment.count_source_items_by_type(export_csv = 'assessment_1_results.csv')
+```
 
 ### Authentication
 
@@ -102,6 +123,8 @@ The module uses OAuth2 for authentication to the Google API. The user must have 
 Upon running the module for the first time, the user will be prompted to authenticate with Google Drive using the OAuth2 credentials and allow the app to access their account. The resulting authentication token will be stored in a file specified in the `config.json` file, and, rather than prompting for authentication each time, subsequent runs of the module will use this token to authenticate (and refresh it if needed).
 
 Since the Google Drive API does not offer scopes that provide read/write access only to specific folders (unless you have a web-based frontend through which you can use the Picker API to choose and allow specific folders via the `drive.file` scope), the module may request access to *all* files and folders in the user's Google Drive account, depending on which assessment is being executed. The module is designed to only read and write to the source and destination folders specified in the `config.json` file, but the user should be aware that the module will have access to all files and folders in their Google Drive account and that they should review this code to their satisfaction before executing it.
+
+Make sure to delete the saved token when you are done using this module. The token is saved in a file specified in the `config.json` file.
 
 > **Note:** To mitigate this somewhat, the module will only request full access (`drive`) if the user is executing assessment #3 and copying items between folders. The other two assessments do not require file read or write access and will instead request a read-only scope to file metadata (`drive.metadata.readonly`). If you have an existing token with just the metadata read-only scope, then you will be prompted to re-authenticate and provide the full read/write permissions if you attempt to execute assessment #3, and that token will replace the saved token you had previously.
 
@@ -171,7 +194,8 @@ The following improvements could be made to the module, depending on requirement
 2. Add different options for interacting with and executing the assessments, depending on the targeted audience and use case. This could be anything from a command-line based menu that allows individual function calls while running the module as a script to a web-based frontend that uses the Picker API to allow the user to select the source and destination folders, allowing for more granular control over the permissions being granted to the app, and then execute the assessments and get reports via a GUI.
 3. Add additional options for exporting the results of the assessments, such as writing the results to a CSV file, a Google Sheet, or a PDF report.
 4. Improve performance of breadth-first search for file copy operations. Currently, the module defaults to a depth-first search, which can be slow for large folder structures. There's an optional implemention of BFS in the `copy_source_items_to_dest_folder()` function, but it's not used by default, as it results in frequent API timeout and SSL errors that are seemingly unrelated to rate limits (this functionality can be used by setting the `bfs` parameter to `True` in the function call).
-5. Add additional functionality to the `copy_source_items_to_dest_folder()` function that allows for optional overwriting of existing files with the same name in the destination folder, with additional logic that checks for existing folders and files in the destination folder, compares Last Modified timestamps, allows for either updating existing files with new content revisions, leaving existing file/folder as-is, etc.
+5. Add additional functionality to the `copy_source_items_to_dest_folder()` function that allows for various copy options, like optional overwriting of existing files with the same name in the destination folder, with additional logic that checks for existing folders and files in the destination folder, compares Last Modified timestamps, allows for either updating existing files with new content revisions, leaving existing file/folder as-is, etc.
+6. Add more thorough parameter validation and error handling to the functions.
 
 ## Authors
 
